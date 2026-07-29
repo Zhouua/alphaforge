@@ -101,7 +101,14 @@ import os
 
 def main(
         instruments: str = "csi500",
-        train_end_year:int = 2020,
+        train_end_year:int = None,
+        train_start:str = None,
+        train_end:str = None,
+        valid_start:str = None,
+        valid_end:str = None,
+        test_start:str = None,
+        test_end:str = None,
+        qlib_path:str = None,
         freq:str = 'day',
         seeds:str = '[0]',
         cuda:int = 0,
@@ -118,22 +125,61 @@ def main(
         window = float('inf')
 
     os.environ["CUDA_VISIBLE_DEVICES"]=str(cuda)
-    train_end = train_end_year
 
     # read data
-    returned = get_data_by_year(
-        train_start = 2010,train_end=train_end,valid_year=train_end+1,test_year =train_end+2,
-        instruments=instruments, target=target,freq=freq,
-    )
+    explicit_dates = [
+        train_start, train_end, valid_start, valid_end, test_start, test_end
+    ]
+    if not any(value is not None for value in explicit_dates) and train_end_year is None:
+        train_start, train_end = "2010-01-01", "2019-11-30"
+        valid_start, valid_end = "2020-01-01", "2021-11-30"
+        test_start, test_end = "2022-01-01", "2025-12-31"
+        explicit_dates = [
+            train_start, train_end, valid_start, valid_end, test_start, test_end
+        ]
+    if any(value is not None for value in explicit_dates):
+        if not all(value is not None for value in explicit_dates):
+            raise ValueError("Pass all six explicit split dates or none of them.")
+        from gan.utils.data import get_data_by_dates
+        returned = get_data_by_dates(
+            train_start=train_start,
+            train_end=train_end,
+            valid_start=valid_start,
+            valid_end=valid_end,
+            test_start=test_start,
+            test_end=test_end,
+            instruments=instruments,
+            target=target,
+            freq=freq,
+            qlib_path=qlib_path,
+        )
+        split_id = (
+            f"{train_start}_{train_end}_{valid_start}_{valid_end}_"
+            f"{test_start}_{test_end}"
+        )
+        train_end_bound = pd.Timestamp(train_end)
+    else:
+        returned = get_data_by_year(
+            train_start=2010,
+            train_end=train_end_year,
+            valid_year=train_end_year + 1,
+            test_year=train_end_year + 2,
+            instruments=instruments,
+            target=target,
+            freq=freq,
+            qlib_path=qlib_path,
+        )
+        split_id = str(train_end_year)
+        train_end_bound = pd.Timestamp(f"{train_end_year}-12-31")
     data_all, data,data_valid,data_valid_withhead,data_test,data_test_withhead,_ = returned
 
     for seed in seeds:
         if isinstance(seeds,str):
             seeds = eval(seeds)
         assert isinstance(seeds,list)   
-        path = f"out/{save_name}_{instruments}_{train_end}_{seed}/z_bld_zoo_final.pkl"
-        tensor_save_path = f"out/{save_name}_{instruments}_{train_end}_{seed}/"
-        name = f"{train_end}_{n_factors}_{window}_{seed}"
+        path = f"out/{save_name}_{instruments}_{split_id}_{seed}/z_bld_zoo_final.pkl"
+        tensor_save_path = f"out/{save_name}_{instruments}_{split_id}_{seed}/"
+        name = f"{split_id}_{n_factors}_{window}_{seed}"
         zoo = load_pickle(path)
         
         df = get_blds_list_df([zoo]).sort_values('score',ascending=False,key=lambda x:abs(x))
@@ -157,7 +203,8 @@ def main(
         ret_s = torch.stack(ret_list,dim=-1)
         torch.cuda.empty_cache()
 
-        shift = 21
+        # The O2O-10D target is known after open[t+11].
+        shift = 11
 
         from tqdm import tqdm
         import numpy as np
@@ -167,19 +214,51 @@ def main(
         good_idx_list = []
         weights_list = []
 
-        # evaluate from the first day of the valid set untill the last day of the test set
-        pbar = tqdm(range(len(fct_tensor)-data_test.n_days-data_valid.n_days,len(fct_tensor)))
+        def evaluable_dates(stock_data):
+            if stock_data.max_future_days == 0:
+                return stock_data._dates[stock_data.max_backtrack_days:]
+            return stock_data._dates[
+                stock_data.max_backtrack_days:-stock_data.max_future_days
+            ]
+
+        all_dates = evaluable_dates(data_all)
+        valid_dates = evaluable_dates(data_valid)
+        test_dates = evaluable_dates(data_test)
+        prediction_indices = np.flatnonzero(
+            (all_dates >= valid_dates[0]) & (all_dates <= test_dates[-1])
+        )
+        prediction_dates = all_dates[prediction_indices]
+        allowed_history = np.asarray(
+            (all_dates <= train_end_bound)
+            | all_dates.isin(valid_dates)
+            | all_dates.isin(test_dates)
+        )
+        all_positions = np.arange(len(all_dates))
+
+        # Evaluate only the requested validation and test dates.
+        pbar = tqdm(prediction_indices)
         for cur in pbar:
 
-            # control the past window that we use to evaluate the factors in order to filter factors and generate the weights
+            # Use only split-authorized dates whose forward labels have matured.
+            history_indices = all_positions[
+                allowed_history & (all_positions < cur - shift)
+            ]
             if np.isfinite(window):
-                begin = cur-window-shift
-            else:
-                begin = 0
+                history_indices = history_indices[-int(window):]
+            if len(history_indices) == 0:
+                raise RuntimeError(
+                    f"No eligible history is available for prediction date "
+                    f"{all_dates[cur]}."
+                )
+            history_tensor = torch.as_tensor(
+                history_indices,
+                dtype=torch.long,
+                device=fct_tensor.device,
+            )
 
-            cur_ic = ic_s[begin:cur-shift]
-            cur_ric = ric_s[begin:cur-shift]
-            cur_ret = ret_s[begin:cur-shift]
+            cur_ic = ic_s[history_tensor]
+            cur_ric = ric_s[history_tensor]
+            cur_ret = ret_s[history_tensor]
 
             ic_mean = cur_ic.mean(dim=0)
             ic_std = cur_ic.std(dim=0)
@@ -216,8 +295,8 @@ def main(
             good_idx_list.append(good_idx)
 
             # prepare the linear regression data
-            x = fct_tensor[begin:cur-shift,:,good_idx]
-            y = tgt_tensor[begin:cur-shift,]#.flatten()
+            x = fct_tensor[history_tensor][:,:,good_idx]
+            y = tgt_tensor[history_tensor]#.flatten()
             to_pred = fct_tensor[cur,:,good_idx]
             y_true = tgt_tensor[cur,]
             y = y.reshape(-1,y.shape[-1])
@@ -253,19 +332,25 @@ def main(
                 )
             pred_list.append(pred[:,0])
 
-        # infer the valid set and save the results
-        num_1 = data_valid.n_days
-        num_2 = data_test.n_days
         all_pred = torch.stack(pred_list,dim=0)
-        all_pred = all_pred[-num_2-num_1:-num_1]
-        torch.save(all_pred.detach().cpu(),f"{tensor_save_path}/pred_valid_{name}.pt")
-
-
-        # infer the test set and save the results
-        num_ = data_test.n_days
-        all_pred = torch.stack(pred_list,dim=0)
-        all_pred = all_pred[-num_:]
-        torch.save(all_pred.detach().cpu(),f"{tensor_save_path}/pred_{name}.pt")
+        valid_mask = np.asarray(prediction_dates.isin(valid_dates))
+        test_mask = np.asarray(prediction_dates.isin(test_dates))
+        valid_pred = all_pred[torch.from_numpy(valid_mask).to(all_pred.device)]
+        test_pred = all_pred[torch.from_numpy(test_mask).to(all_pred.device)]
+        if len(valid_pred) != data_valid.n_days or len(test_pred) != data_test.n_days:
+            raise RuntimeError(
+                "Date alignment failed while splitting AFF predictions: "
+                f"valid={len(valid_pred)}/{data_valid.n_days}, "
+                f"test={len(test_pred)}/{data_test.n_days}."
+            )
+        torch.save(
+            valid_pred.detach().cpu(),
+            f"{tensor_save_path}/pred_valid_{name}.pt",
+        )
+        torch.save(
+            test_pred.detach().cpu(),
+            f"{tensor_save_path}/pred_{name}.pt",
+        )
 
         # torch.cuda.empty_cache()
 

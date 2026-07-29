@@ -1,8 +1,11 @@
 from typing import List, Union, Optional, Tuple, Dict
 from enum import IntEnum
+import os
+import platform
 import numpy as np
 import pandas as pd
 import torch
+import warnings
 
 class FeatureType(IntEnum):
     OPEN = 0
@@ -11,7 +14,7 @@ class FeatureType(IntEnum):
     LOW = 3
     VOLUME = 4
     VWAP = 5
-    
+
 def change_to_raw_min(features):
     result = []
     for feature in features:
@@ -71,7 +74,14 @@ class StockData:
             return
         import qlib
         from qlib.config import REG_CN
-        qlib.init(provider_uri=qlib_path, region=REG_CN)
+        init_kwargs = {}
+        if platform.system() == "Darwin":
+            # Qlib's multiprocessing backend uses spawn on macOS. Keeping the
+            # data loader single-process avoids recursive script execution.
+            init_kwargs["kernels"] = int(
+                os.environ.get("ALPHAFORGE_QLIB_KERNELS", "1")
+            )
+        qlib.init(provider_uri=qlib_path, region=REG_CN, **init_kwargs)
         cls._qlib_initialized = True
 
     def _load_exprs(self, exprs: Union[str, List[str]]) -> pd.DataFrame:
@@ -84,11 +94,33 @@ class StockData:
         cal: np.ndarray = D.calendar(freq=self.freq)
         start_index = cal.searchsorted(pd.Timestamp(self._start_time))  # type: ignore
         end_index = cal.searchsorted(pd.Timestamp(self._end_time))  # type: ignore
-        real_start_time = cal[start_index - self.max_backtrack_days]
+        if start_index >= len(cal) or end_index >= len(cal):
+            raise ValueError(
+                f"Requested range [{self._start_time}, {self._end_time}] exceeds "
+                f"the Qlib {self.freq} calendar ending at {cal[-1]}."
+            )
+        backtrack_start_index = max(0, start_index - self.max_backtrack_days)
+        if backtrack_start_index > start_index - self.max_backtrack_days:
+            warnings.warn(
+                f"Only {start_index} historical {self.freq} observations are "
+                f"available before {self._start_time}; "
+                f"{self.max_backtrack_days} were requested. The evaluable "
+                "range will start late.",
+                RuntimeWarning,
+            )
+        real_start_time = cal[backtrack_start_index]
         if cal[end_index] != pd.Timestamp(self._end_time):
             end_index -= 1
-        # real_end_time = cal[min(end_index + self.max_future_days,len(cal)-1)]
-        real_end_time = cal[end_index + self.max_future_days]
+        future_end_index = min(end_index + self.max_future_days, len(cal) - 1)
+        if future_end_index < end_index + self.max_future_days:
+            warnings.warn(
+                f"Only {future_end_index - end_index} future {self.freq} "
+                f"observations are available after {self._end_time}; "
+                f"{self.max_future_days} were requested. The evaluable range "
+                "will end early.",
+                RuntimeWarning,
+            )
+        real_end_time = cal[future_end_index]
         result =  (QlibDataLoader(config=exprs,freq=self.freq)  # type: ignore
                 .load(self._instrument, real_start_time, real_end_time))
         return result
@@ -161,5 +193,3 @@ class StockData:
         index = pd.MultiIndex.from_product([date_index, self._stock_ids])
         data = data.reshape(-1, n_columns)
         return pd.DataFrame(data.detach().cpu().numpy(), index=index, columns=columns)
-    
-    

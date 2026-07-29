@@ -1,0 +1,18 @@
+{
+  "AlphaForge": {
+    "valid": "out/experiment_csi300_<split>_0/pred_valid_<name>.pt",
+    "test": "out/experiment_csi300_<split>_0/pred_<name>.pt"
+  },
+  "GP": {
+    "valid": "out_gp/csi300_<split>_day_0/pred_valid.pt",
+    "test": "out_gp/csi300_<split>_day_0/pred_test.pt"
+  },
+  "DSO": {
+    "valid": "out_dso/experiment_csi300_100_<split>_0/pred_valid.pt",
+    "test": "out_dso/experiment_csi300_100_<split>_0/pred_test.pt"
+  },
+  "LLM": {
+    "valid": "llm_predictions/pred_valid.pt",
+    "test": "llm_predictions/pred_test.pt"
+  }
+}

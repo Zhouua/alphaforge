@@ -3,6 +3,7 @@
 # Petersen et.al (2023)[https://github.com/dso-org/deep-symbolic-optimization]
 # Microsoft (2024) [https://github.com/microsoft/qlib/tree/main/qlib]
 
+import ast
 import torch 
 import os
 from gan.dataset import Collector
@@ -90,7 +91,13 @@ def train_net_p_with_weight(cfg,net,x,y,weights,lr=0.001):
                            num_epochs=cfg.num_epochs_p, use_tensorboard=False, 
                            tensorboard_path='logs', early_stopping_patience=cfg.es_p)
 
-def get_metric(zoo_blds,device,corr_thresh=0.5,metric_target='ic'):
+def get_metric(
+    zoo_blds,
+    device,
+    corr_thresh=0.5,
+    metric_target='ic',
+    evaluation_tracker=None,
+):
 
     n_blds = len(zoo_blds)
     if n_blds >0:
@@ -103,7 +110,9 @@ def get_metric(zoo_blds,device,corr_thresh=0.5,metric_target='ic'):
     else:
         print("n_blds == 0")
     
-    def get_score(fct,tgt):
+    def get_score(fct,tgt,expr):
+        if evaluation_tracker is not None:
+            evaluation_tracker.add(str(expr))
         metric_target = 'ic'
         ret = batch_ret(fct,tgt)
         ic = batch_pearsonr(fct,tgt)
@@ -148,32 +157,67 @@ def get_metric(zoo_blds,device,corr_thresh=0.5,metric_target='ic'):
 
 
 def main(
-        instruments: str = "csi500",
-        train_end_year:int = 2020,
+        instruments: str = "csi300",
+        train_end_year:int = None,
+        train_start:str = "2010-01-01",
+        train_end:str = "2019-11-30",
+        valid_start:str = "2020-01-01",
+        valid_end:str = "2021-11-30",
+        test_start:str = None,
+        test_end:str = None,
+        qlib_path:str = None,
         freq:str = 'day',
         seeds:str = '[0]',
         cuda:int = 0,
+        device:str = 'auto',
         save_name:str = 'test',
         zoo_size:int = 100,
+        initial_candidates:int = 10000,
+        candidates_per_round:int = 1000,
+        max_rounds:int = -1,
         corr_thresh:float = 0.7,
         ic_thresh:float = 0.03,
         icir_thresh:float = 0.1,
 ):
     if isinstance(seeds,str):
-        seeds = eval(seeds)
+        seeds = ast.literal_eval(seeds)
     assert isinstance(seeds,list)   
     os.environ["CUDA_VISIBLE_DEVICES"]=str(cuda)
-    train_end = train_end_year
-    returned = get_data_by_year(
-        train_start = 2010,train_end=train_end,valid_year=train_end+1,test_year =train_end+2,
-        instruments=instruments, target=target,freq=freq,
+    if test_start is not None or test_end is not None:
+        raise ValueError(
+            "Stage-1 factor search must not receive test dates. "
+            "Use public_test.py only after the model has been frozen."
+        )
+    if train_end_year is not None:
+        raise ValueError(
+            "--train_end_year is disabled by the leakage-safe protocol; "
+            "pass explicit train/validation dates."
+        )
+    if device == 'auto':
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        raise RuntimeError(f"CUDA device requested but unavailable: {device}")
+    resolved_device = device
+    from gan.utils.data import get_search_data_by_dates
+    data, data_valid, _ = get_search_data_by_dates(
+        train_start=train_start,
+        train_end=train_end,
+        valid_start=valid_start,
+        valid_end=valid_end,
+        instruments=instruments,
+        target=target,
+        freq=freq,
+        qlib_path=qlib_path,
+        device=resolved_device,
     )
-    data_all,data,data_valid,data_valid_withhead,data_test,data_test_withhead,_ = returned
+    split_id = (
+        f"{train_start}_{train_end}_{valid_start}_{valid_end}"
+    )
 
     for seed in seeds:
         reseed_everything(seed)
         class cfg:
-            name = f'{save_name}_{instruments}_{train_end}_{seed}'
+            name = f'{save_name}_{instruments}_{split_id}_{seed}'
             # 
             max_len = 20
 
@@ -218,7 +262,7 @@ def main(
 
             l_entropy = 0
 
-            device = 'cuda:0'
+            device = resolved_device
 
         print(f"seed:{seed},name:{cfg.name}")
 
@@ -250,30 +294,46 @@ def main(
         random_call(z)
 
         # initialize the zoo
+        evaluated_exprs = set()
         zoo_blds = Builders(0,max_len=cfg.max_len,n_actions=SIZE_ACTION)
-        metric = get_metric(zoo_blds,device=cfg.device,corr_thresh=cfg.f_corr_thresh)
+        metric = get_metric(
+            zoo_blds,
+            device=cfg.device,
+            corr_thresh=cfg.f_corr_thresh,
+            evaluation_tracker=evaluated_exprs,
+        )
         empty_metric = get_metric(
             Builders(0,max_len=cfg.max_len,n_actions=SIZE_ACTION),
-            device=cfg.device,corr_thresh=cfg.f_corr_thresh
+            device=cfg.device,
+            corr_thresh=cfg.f_corr_thresh,
+            evaluation_tracker=evaluated_exprs,
         )
 
         coll = Collector(seq_len=cfg.max_len,n_actions=SIZE_ACTION)
         coll.reset(data,target,metric)
         coll.collect_target_num(netG,netM,z,data,target,metric,
-                                target_num=10000,reset_net=True,drop_invalid=False,
+                                target_num=initial_candidates,reset_net=True,drop_invalid=False,
                                 randomly = False,
                                 random_method = random_call,max_iter = 200)
 
 
         # train and mine untill the zoo is full
         t = 0
-        while len(zoo_blds)<cfg.num_factors:
+        while (
+            len(zoo_blds) < cfg.num_factors
+            and (max_rounds < 0 or t < max_rounds)
+        ):
             if not zoo_blds.examined:
                 print(' zoo_blds not examined')
                 zoo_blds.evaluate(data,target,empty_metric,verbose=True)
 
             ### update the metric for the current zoo
-            metric = get_metric(zoo_blds,device = cfg.device,corr_thresh=cfg.f_corr_thresh)
+            metric = get_metric(
+                zoo_blds,
+                device=cfg.device,
+                corr_thresh=cfg.f_corr_thresh,
+                evaluation_tracker=evaluated_exprs,
+            )
 
             ### Prepare data to train predictor
             coll.blds.evaluate(data,target,metric,verbose=True)
@@ -310,7 +370,7 @@ def main(
             ### Generate new alpha factors from current Generator
             coll.reset(data,target,metric)
             coll.collect_target_num(netG,netM,z,data,target,metric,
-                                    target_num=1000,reset_net=False,drop_invalid=False,
+                                    target_num=candidates_per_round,reset_net=False,drop_invalid=False,
                                     randomly = False,
                                     random_method = random_call,max_iter = 100)
 
@@ -351,19 +411,58 @@ def main(
 
             # Randomly generate some alpha factors in order to promote exploration and to avoid local minimum
             coll.collect_target_num(netG,netM,z,data,target,metric,
-                                    target_num=1000,reset_net=False,drop_invalid=False,
+                                    target_num=candidates_per_round,reset_net=False,drop_invalid=False,
                                     randomly = True,
                                     random_method = random_call,max_iter = 100)
 
             del x,y,weights
             gc.collect()
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             t+=1
 
+        if len(zoo_blds) < cfg.num_factors:
+            print(
+                f"Stopped after {t} rounds with {len(zoo_blds)}/"
+                f"{cfg.num_factors} factors in the zoo."
+            )
+
         empty_blds = Builders(0,max_len=cfg.max_len,n_actions=SIZE_ACTION)
-        metric = get_metric(empty_blds,device = cfg.device,corr_thresh=cfg.f_corr_thresh)
+        metric = get_metric(
+            empty_blds,
+            device=cfg.device,
+            corr_thresh=cfg.f_corr_thresh,
+            evaluation_tracker=evaluated_exprs,
+        )
         zoo_blds.evaluate(data,target,metric,verbose=True)
+        if len(zoo_blds) > cfg.num_factors:
+            zoo_blds = zoo_blds.sort_by_score(ascending=False)
+            zoo_blds = zoo_blds.filter_by_index(range(cfg.num_factors))
         save_blds(zoo_blds,f"out/{cfg.name}",'zoo_final')
+        from export_factor_library import export_builders
+        export_builders(
+            zoo_blds,
+            f"out/{cfg.name}/factor_library.json",
+            seed=seed,
+            run_name=cfg.name,
+        )
+        os.makedirs(f"out/{cfg.name}", exist_ok=True)
+        with open(f"out/{cfg.name}/run_metadata.json", "w") as file:
+            import json
+            json.dump(
+                {
+                    "unique_expressions_evaluated": len(evaluated_exprs),
+                    "rounds": t,
+                    "zoo_size": len(zoo_blds),
+                    "split_id": split_id,
+                    "seed": seed,
+                    "device": cfg.device,
+                    "test_data_loaded": False,
+                    "factor_library": "factor_library.json",
+                },
+                file,
+                indent=2,
+            )
 
 if __name__ == '__main__':
     import fire

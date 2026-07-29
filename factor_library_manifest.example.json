@@ -1,0 +1,6 @@
+{
+  "AlphaForge": "out/experiment_csi300_<split>_0/z_bld_zoo_final.pkl",
+  "GP": "out_gp/csi300_<split>_day_0/final.json",
+  "DSO": "out_dso/experiment_csi300_100_<split>_0/pool.json",
+  "LLM": "llm_factors.json"
+}

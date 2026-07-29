@@ -117,12 +117,27 @@ class AlphaPool(AlphaPoolBase):
             assert ic_ret is not None and ic_mut is not None
             self._add_factor(expr, value, ic_ret, ic_mut)
             assert self.size <= self.capacity
-        self._optimize(alpha=5e-3, lr=5e-4, n_iter=500)
+        if self.size > 1:
+            self.weights[:self.size] = self._optimize(
+                alpha=5e-3, lr=5e-4, n_iter=500
+            )
 
     def _optimize(self, alpha: float, lr: float, n_iter: int) -> np.ndarray:
-        ics_ret = torch.from_numpy(self.single_ics[:self.size]).to(self.device)
-        ics_mut = torch.from_numpy(self.mutual_ics[:self.size, :self.size]).to(self.device)
-        weights = torch.from_numpy(self.weights[:self.size]).to(self.device).requires_grad_()
+        ics_ret = torch.as_tensor(
+            self.single_ics[:self.size],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        ics_mut = torch.as_tensor(
+            self.mutual_ics[:self.size, :self.size],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        weights = torch.as_tensor(
+            self.weights[:self.size],
+            dtype=torch.float32,
+            device=self.device,
+        ).requires_grad_()
         optim = torch.optim.Adam([weights], lr=lr)
 
         loss_ic_min = 1e9 + 7  # An arbitrary big value
@@ -157,18 +172,30 @@ class AlphaPool(AlphaPoolBase):
 
     def test_ensemble(self, data: StockData, target: Expression) -> Tuple[float, float]:
         with torch.no_grad():
-            factors: List[Tensor] = []
-            for i in range(self.size):
-                factor = self._normalize_by_day(self.exprs[i].evaluate(data))   # type: ignore
-                weighted_factor = factor * self.weights[i]
-                factors.append(weighted_factor)
-            combined_factor: Tensor = sum(factors)  # type: ignore
+            combined_factor = self.predict_ensemble(data)
             target_factor = target.evaluate(data)
 
             ic = batch_pearsonr(combined_factor, target_factor).mean().item()
-            # rank_ic = batch_spearmanr(combined_factor, target_factor).mean().item()
-            rank_ic = ic
+            rank_ic_parts = []
+            for start in range(0, len(combined_factor), 64):
+                rank_ic_parts.append(
+                    batch_spearmanr(
+                        combined_factor[start:start + 64],
+                        target_factor[start:start + 64],
+                    )
+                )
+            rank_ic = torch.cat(rank_ic_parts).mean().item()
             return ic, rank_ic
+
+    def predict_ensemble(self, data: StockData) -> Tensor:
+        """Evaluate the current weighted factor pool on another data split."""
+        if self.size == 0:
+            raise ValueError("Cannot predict with an empty alpha pool.")
+        factors: List[Tensor] = []
+        for i in range(self.size):
+            factor = self._normalize_by_day(self.exprs[i].evaluate(data))  # type: ignore
+            factors.append(factor * self.weights[i])
+        return sum(factors)  # type: ignore
 
     def evaluate_ensemble(self):
         with torch.no_grad():

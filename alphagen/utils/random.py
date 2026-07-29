@@ -14,6 +14,7 @@ def reseed_everything(seed: Optional[int]):
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    cudnn.deterministic = True
-    cudnn.benchmark = True
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        cudnn.deterministic = True
+        cudnn.benchmark = False

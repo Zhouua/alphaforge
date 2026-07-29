@@ -1,0 +1,44 @@
+{
+  "protocol_version": "alphamining-aligned-csi300-o2o10-v1",
+  "data": {
+    "provider": "Qlib cn_data",
+    "feature_semantics": "provider-native Qlib fields (raw=false)",
+    "features": ["open", "high", "low", "close", "volume", "vwap"],
+    "instruments": "csi300",
+    "benchmark": "SH000300"
+  },
+  "segments": {
+    "train": ["2010-01-01", "2019-11-30"],
+    "valid": ["2020-01-01", "2021-11-30"],
+    "test": ["2022-01-01", "2025-12-31"]
+  },
+  "label": {
+    "name": "Open-to-Open 10D",
+    "expression": "Ref($open, -11) / Ref($open, -1) - 1"
+  },
+  "model": {
+    "class": "qlib.contrib.model.linear.LinearModel",
+    "estimator": "ridge",
+    "alpha": 10.0,
+    "fit_intercept": false,
+    "include_valid": false
+  },
+  "strategy": {
+    "class": "qlib.contrib.strategy.TopkDropoutStrategy",
+    "topk": 50,
+    "n_drop": 5,
+    "deal_price": "open"
+  },
+  "backtest": {
+    "account": 100000000,
+    "open_cost": 0.0005,
+    "close_cost": 0.0015,
+    "min_cost": 5,
+    "limit_threshold": null
+  },
+  "leakage_policy": {
+    "factor_search": ["train"],
+    "model_freeze": ["train", "valid"],
+    "public_test_only": ["test"]
+  }
+}

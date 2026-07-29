@@ -147,7 +147,7 @@ class NetG_Lstm(nn.Module):
             mask_s[:,t] = mask_tensor
             
             # 下一时间步输入
-            input_step = torch.torch.from_numpy(onehot_s[:,t].astype(np.compat.long)).to(device)
+            input_step = torch.from_numpy(onehot_s[:, t].astype(np.int64)).to(device)
             
             
         return (onehot_s,logit_s,mask_s),builders
