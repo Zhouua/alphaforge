@@ -1,185 +1,209 @@
+"""Leakage-safe PyTorch DSO factor generation for the aligned protocol."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import os
+import sys
+from pathlib import Path
+
 import torch
-import sklearn
-import tensorflow as tf
-import numpy as np
-import os,json
 
-from alphagen.data.expression import *
-# from alphagen_qlib.calculator import QLibStockDataCalculator
-from dso import DeepSymbolicRegressor
-from dso.library import Token, HardCodedConstant
-from dso import functions
-from alphagen.models.alpha_pool import AlphaPool
-from alphagen.utils import reseed_everything
-from alphagen_generic.operators import funcs as generic_funcs
-from alphagen_generic.features import *
-from gan.utils.data import get_data_by_year
+from alphagen.utils.random import reseed_everything
+from alphagen_generic.features import target
+from experiment_protocol import INSTRUMENTS, SPLITS
+from factor_library_io import write_factor_library
+from gan.utils.data import get_search_data_by_dates
 
-funcs = {func.name: Token(complexity=1, **func._asdict()) for func in generic_funcs}
-for i, feature in enumerate(['open', 'close', 'high', 'low', 'volume', 'vwap']):
-    funcs[f'x{i+1}'] = Token(name=feature, arity=0, complexity=1, function=None, input_var=i)
-for v in [-30., -10., -5., -2., -1., -0.5, -0.01, 0.01, 0.5, 1., 2., 5., 10., 30.]:
-    funcs[f'Constant({v})'] = HardCodedConstant(name=f'Constant({v})', value=v)
 
-def main(
-        instruments:str='csi300',
-        train_end:int=None,
-        train_start_date:str=None,
-        train_end_date:str=None,
-        valid_start:str=None,
-        valid_end:str=None,
-        test_start:str=None,
-        test_end:str=None,
-        qlib_path:str=None,
-        seeds:list=[0],
-        capacity:int=100,
-        n_samples:int=5000,
-        batch_size:int=128,
-        cuda:int=0,
-        name:str='test',
-):
-    import os
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda)
-    if isinstance(seeds,str):
-        seeds = eval(seeds)
-    for seed in seeds:
-        tf.set_random_seed(seed)
-        reseed_everything(seed)
-        explicit_dates = [
-            train_start_date,
-            train_end_date,
-            valid_start,
-            valid_end,
-            test_start,
-            test_end,
-        ]
-        if not any(value is not None for value in explicit_dates) and train_end is None:
-            train_start_date, train_end_date = "2010-01-01", "2019-11-30"
-            valid_start, valid_end = "2020-01-01", "2021-11-30"
-            test_start, test_end = "2022-01-01", "2025-12-31"
-            explicit_dates = [
-                train_start_date,
-                train_end_date,
-                valid_start,
-                valid_end,
-                test_start,
-                test_end,
-            ]
-        if any(value is not None for value in explicit_dates):
-            if not all(value is not None for value in explicit_dates):
-                raise ValueError("Pass all six explicit split dates or none of them.")
-            from gan.utils.data import get_data_by_dates
-            returned = get_data_by_dates(
-                train_start=train_start_date,
-                train_end=train_end_date,
-                valid_start=valid_start,
-                valid_end=valid_end,
-                test_start=test_start,
-                test_end=test_end,
-                instruments=instruments,
-                target=target,
-                freq='day',
-                qlib_path=qlib_path,
-            )
-            split_id = (
-                f"{train_start_date}_{train_end_date}_{valid_start}_{valid_end}_"
-                f"{test_start}_{test_end}"
-            )
-        else:
-            returned = get_data_by_year(
-                train_start=2010,
-                train_end=train_end,
-                valid_year=train_end + 1,
-                test_year=train_end + 2,
-                instruments=instruments,
-                target=target,
-                freq='day',
-                qlib_path=qlib_path,
-            )
-            split_id = str(train_end)
-        data_all, data,data_valid,data_valid_withhead,data_test,data_test_withhead,_ = returned
+ROOT = Path(__file__).resolve().parent
+DSO_PROJECT = ROOT / "third_party" / "dso_pytorch" / "dso"
 
-        cache = {}
 
-        X = np.array([['open_', 'close', 'high', 'low', 'volume', 'vwap']])
-        y = np.array([[1]])
-        functions.function_map = funcs
-
-        pool = AlphaPool(capacity=capacity,
-                        stock_data=data,
-                        target=target,
-                        ic_lower_bound=None)
-        save_path = f'out_dso/{name}_{instruments}_{capacity}_{split_id}_{seed}/'
-        os.makedirs(save_path,exist_ok=True)
-
-        class Ev:
-            def __init__(self, pool):
-                self.cnt = 0
-                self.pool = pool
-                self.results = {}
-                self.seen = set()
-
-            def alpha_ev_fn(self, key):
-                self.seen.add(key)
-                expr = eval(key)
-                try:
-                    ret = self.pool.try_new_expr(expr)
-                except OutOfDataRangeError:
-                    ret = -1.
-                self.cnt += 1
-                if self.cnt % 100 == 0:
-                    valid_ic = pool.test_ensemble(data_valid,target)[0]
-                    self.results[self.cnt] = valid_ic
-                    print(self.cnt, valid_ic)
-                return ret
-
-        ev = Ev(pool)
-
-        config = dict(
-            task=dict(
-                task_type='regression',
-                function_set=list(funcs.keys()),
-                metric='alphagen',
-                metric_params=[lambda key: ev.alpha_ev_fn(key)],
-            ),
-            training={
-                'n_samples': n_samples,
-                'batch_size': batch_size,
-                'epsilon': 0.05,
-            },
-            prior={'length': {'min_': 2, 'max_': 20, 'on': True}},
-            experiment={'seed':seed},
+def load_pytorch_dso():
+    if not (DSO_PROJECT / "dso" / "core.py").is_file():
+        raise RuntimeError(
+            "Official PyTorch DSO source is missing at "
+            f"{DSO_PROJECT}. Do not fall back to the legacy TensorFlow DSO."
         )
+    sys.path.insert(0, str(DSO_PROJECT))
+    try:
+        from dso import DeepSymbolicOptimizer
+        from dso.program import Program
+    except ModuleNotFoundError as error:
+        raise RuntimeError(
+            "PyTorch DSO dependency is missing. Install the small compatibility "
+            "set with: python -m pip install -r "
+            "requirements-dso-pytorch.txt"
+        ) from error
+    imported_from = Path(sys.modules["dso"].__file__).resolve()
+    if DSO_PROJECT not in imported_from.parents:
+        raise RuntimeError(
+            f"Imported the wrong DSO package from {imported_from}; expected "
+            f"the official PyTorch source under {DSO_PROJECT}."
+        )
+    return DeepSymbolicOptimizer, Program
 
-        # Create the model
-        model = DeepSymbolicRegressor(config=config)
-        model.fit(X, y)
-        valid_ic, valid_rank_ic = pool.test_ensemble(data_valid, target)
-        orientation = 1. if valid_ic >= 0 else -1.
-        test_ic, test_rank_ic = pool.test_ensemble(data_test, target)
-        valid_prediction = pool.predict_ensemble(data_valid) * orientation
-        test_prediction = pool.predict_ensemble(data_test) * orientation
-        pool_result = pool.to_dict()
-        pool_result['weights'] = [
-            orientation * weight for weight in pool_result['weights']
-        ]
-        with open(f'{save_path}/pool.json', 'w') as f:
-            json.dump(pool_result, f)
-        torch.save(valid_prediction.detach().cpu(), f'{save_path}/pred_valid.pt')
-        torch.save(test_prediction.detach().cpu(), f'{save_path}/pred_test.pt')
-        metrics = {
-            'orientation_selected_on_valid': orientation,
-            'valid_ic': valid_ic * orientation,
-            'valid_rank_ic': valid_rank_ic * orientation,
-            'test_ic': test_ic * orientation,
-            'test_rank_ic': test_rank_ic * orientation,
-            'unique_expressions_evaluated': len(ev.seen),
-            'valid_trace': ev.results,
+
+def choose_device(requested: str) -> str:
+    if requested != "auto":
+        return requested
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--instrument", default=INSTRUMENTS)
+    parser.add_argument("--seeds", default="[0]")
+    parser.add_argument("--train_start", default=SPLITS.train_start)
+    parser.add_argument("--train_end", default=SPLITS.train_end)
+    parser.add_argument("--valid_start", default=SPLITS.valid_start)
+    parser.add_argument("--valid_end", default=SPLITS.valid_end)
+    parser.add_argument("--test_start", default=None)
+    parser.add_argument("--test_end", default=None)
+    parser.add_argument("--qlib_path", default=None)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--cuda", default="0")
+    parser.add_argument("--n_samples", type=int, default=20000)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--epsilon", type=float, default=0.05)
+    parser.add_argument("--max_expression_length", type=int, default=20)
+    parser.add_argument("--library_size", type=int, default=100)
+    parser.add_argument("--min_factors", type=int, default=50)
+    parser.add_argument("--output_root", default="out_dso")
+    args = parser.parse_args()
+    if args.test_start is not None or args.test_end is not None:
+        parser.error(
+            "DSO generation must not receive test dates. Test belongs only to "
+            "the public evaluator."
+        )
+    try:
+        args.seeds = ast.literal_eval(args.seeds)
+    except (SyntaxError, ValueError) as error:
+        parser.error(f"--seeds must be a Python-style integer list: {error}")
+    if isinstance(args.seeds, int):
+        args.seeds = [args.seeds]
+    if not isinstance(args.seeds, (list, tuple)) or not all(
+        isinstance(value, int) for value in args.seeds
+    ):
+        parser.error("--seeds must contain integers, for example '[0,1,2]'.")
+    if args.instrument != INSTRUMENTS:
+        parser.error(f"Aligned protocol requires --instrument={INSTRUMENTS}.")
+    if not 0 < args.epsilon <= 1:
+        parser.error("--epsilon must be in (0, 1].")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
+    device = choose_device(args.device)
+    DeepSymbolicOptimizer, Program = load_pytorch_dso()
+    from dso_qlib_task import configure_qlib_task
+
+    split_id = (
+        f"{args.train_start}_{args.train_end}_"
+        f"{args.valid_start}_{args.valid_end}"
+    )
+    for seed in args.seeds:
+        reseed_everything(seed)
+        data, _data_valid, cache_name = get_search_data_by_dates(
+            train_start=args.train_start,
+            train_end=args.train_end,
+            valid_start=args.valid_start,
+            valid_end=args.valid_end,
+            instruments=args.instrument,
+            target=target,
+            freq="day",
+            qlib_path=args.qlib_path,
+            device=device,
+        )
+        configure_qlib_task(data, target)
+        run_name = f"dso_csi300_{split_id}_{seed}"
+        run_dir = Path(args.output_root) / run_name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        config = {
+            "task": {
+                "task_type": "dso_qlib_task:QlibFactorTask",
+                "protected": False,
+            },
+            "training": {
+                "n_samples": args.n_samples,
+                "batch_size": args.batch_size,
+                "epsilon": args.epsilon,
+                "baseline": "R_e",
+                "n_cores_batch": 1,
+                "early_stopping": False,
+                "verbose": True,
+            },
+            "prior": {
+                "length": {
+                    "min_": 2,
+                    "max_": args.max_expression_length,
+                    "on": True,
+                },
+                "no_inputs": {"on": True},
+                "uniform_arity": {"on": True},
+                "soft_length": {
+                    "loc": 10,
+                    "scale": 5,
+                    "on": True,
+                },
+            },
+            "policy": {
+                "max_length": args.max_expression_length,
+                "cell": "lstm",
+                "num_layers": 1,
+                "num_units": 32,
+            },
+            "policy_optimizer": {
+                "policy_optimizer_type": "pg",
+                "learning_rate": 0.0005,
+                "entropy_weight": 0.03,
+                "entropy_gamma": 0.7,
+            },
+            "logging": {
+                "save_all_iterations": False,
+                "save_summary": False,
+                "save_pareto_front": False,
+                "save_cache": False,
+                "hof": args.library_size,
+            },
+            "experiment": {
+                "seed": seed,
+                "device": device,
+                "logdir": str(run_dir / "native_logs"),
+                "exp_name": f"seed{seed}",
+            },
         }
-        with open(f'{save_path}/metrics.json', 'w') as f:
-            json.dump(metrics, f, indent=2)
-        print(metrics)
+        model = DeepSymbolicOptimizer(config)
+        model.train()
+        qlib_task = Program.task
+        scored_expressions = list(qlib_task.score_cache.items())
+        library_path = write_factor_library(
+            scored_expressions,
+            run_dir,
+            method="DSO",
+            method_id="dso",
+            seed=seed,
+            run_name=run_name,
+            library_size=args.library_size,
+            min_factors=args.min_factors,
+            metadata={
+                "unique_expressions_evaluated": len(scored_expressions),
+                "n_samples": args.n_samples,
+                "batch_size": args.batch_size,
+                "epsilon": args.epsilon,
+                "device": device,
+                "split_id": split_id,
+                "search_cache": cache_name,
+                "backend": "official PyTorch DSO",
+            },
+        )
+        print(f"PASS: DSO exported {args.library_size} train-selected factors")
+        print(library_path)
 
-if __name__ == '__main__':
-    import fire
-    fire.Fire(main)
+
+if __name__ == "__main__":
+    main()

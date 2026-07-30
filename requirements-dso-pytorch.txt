@@ -1,0 +1,7 @@
+# Compatibility dependencies for the vendored official PyTorch DSO.
+# Deliberately do not install third_party/dso_pytorch/dso/setup.py: its legacy
+# numpy/numba pins are incompatible with the shared Python 3.11 venv.
+commentjson>=0.9,<1
+prettytable>=3,<4
+scipy>=1.10,<2
+sympy>=1.12,<2

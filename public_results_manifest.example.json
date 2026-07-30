@@ -1,4 +1,6 @@
 {
   "AlphaForge_seed0": "public_test_results/alphaforge_seed0/summary.json",
+  "GP_seed0": "public_test_results/gp_seed0/summary.json",
+  "DSO_seed0": "public_test_results/dso_seed0/summary.json",
   "AlphaMining_seed0": "public_test_results/alphamining_seed0/summary.json"
 }
