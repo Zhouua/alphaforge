@@ -353,7 +353,7 @@ class Trainer:
             if self.use_memory:  # Memory-augmented quantile
                 quantile = self._extracted_from_run_one_step_142(programs)
             else:  # Empirical quantile
-                quantile = np.quantile(r, 1 - self.epsilon, interpolation="higher")
+                quantile = np.quantile(r, 1 - self.epsilon, method="higher")
 
             # Filter quantities whose reward >= quantile
             keep = r >= quantile

@@ -16,6 +16,7 @@ directly and installs only the compatible runtime packages listed in
 Local compatibility changes:
 
 - use NumPy 2-compatible `np.bool_` and `np.int64` aliases;
+- use NumPy 2-compatible array byte keys and quantile APIs;
 - allow the search routines to fall back to Python when Numba is unavailable;
 - fall back to the pure-Python executor when the optional Cython extension is
   not built.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import numpy as np
 import torch
@@ -39,6 +40,9 @@ EXPRESSION_NAMESPACE = {
     if isinstance(value, (Expression, type))
 }
 EXPRESSION_NAMESPACE["__builtins__"] = {}
+# AlphaForge serializes the Python variable ``open_`` as the canonical feature
+# name ``open``.  Keep both names valid at every parse boundary.
+EXPRESSION_NAMESPACE["open"] = open_
 GENERIC_BY_NAME = {operator.name: operator for operator in generic_funcs}
 
 
@@ -58,6 +62,33 @@ def configure_qlib_task(data, target_expression) -> None:
         data=data,
         target_factor=target_expression.evaluate(data),
     )
+
+
+def parse_alpha_expression(text: str) -> Expression:
+    """Parse a generated/canonical expression with feature aliases restored."""
+    normalized = re.sub(r"\bopen\b", "open_", str(text))
+    expression = eval(normalized, EXPRESSION_NAMESPACE, {})
+    if not isinstance(expression, Expression):
+        raise ValueError(f"Not an AlphaForge expression: {text}")
+    return expression
+
+
+def validate_expression_roundtrip() -> None:
+    """Fail early if AlphaForge serialization can no longer be parsed."""
+    examples = (
+        open_,
+        open_ / close,
+        ts_mean(open_, 10),
+        ts_corr(open_, volume, 20),
+    )
+    for expression in examples:
+        serialized = str(expression)
+        restored = parse_alpha_expression(serialized)
+        if str(restored) != serialized:
+            raise RuntimeError(
+                "Alpha expression round-trip mismatch: "
+                f"{serialized!r} -> {str(restored)!r}"
+            )
 
 
 def _expression_from_program(program) -> str:
@@ -82,10 +113,13 @@ def _expression_from_program(program) -> str:
     raw, consumed = consume(0)
     if consumed != len(traversal):
         raise ValueError("DSO traversal has unconsumed tokens.")
-    expression = eval(raw, EXPRESSION_NAMESPACE, {})
-    if not isinstance(expression, Expression):
-        raise ValueError(f"Not an AlphaForge expression: {raw}")
-    return str(expression)
+    return str(parse_alpha_expression(raw))
+
+
+def _mark_invalid(program, error_type: str) -> None:
+    program.invalid = True
+    program.error_type = error_type
+    program.error_node = None
 
 
 class QlibFactorTask(HierarchicalTask):
@@ -133,18 +167,22 @@ class QlibFactorTask(HierarchicalTask):
 
     def reward_function(self, program, optimizing: bool = False) -> float:
         del optimizing
+        expression_text = None
         try:
             expression_text = _expression_from_program(program)
-        except (KeyError, TypeError, ValueError):
-            program.invalid = True
-            program.error_type = "qlib_expression"
-            program.error_node = None
+        except Exception as error:
+            _mark_invalid(
+                program,
+                f"qlib_expression_{type(error).__name__}",
+            )
             return -1.0
         cached = self.score_cache.get(expression_text)
         if cached is not None:
+            if cached < 0:
+                _mark_invalid(program, "qlib_cached_invalid")
             return cached
         try:
-            expression = eval(expression_text, EXPRESSION_NAMESPACE, {})
+            expression = parse_alpha_expression(expression_text)
             factor = normalize_by_day(expression.evaluate(_CONTEXT.data))
             daily_ic = batch_pearsonr(factor, _CONTEXT.target_factor)
             score = abs(
@@ -152,15 +190,16 @@ class QlibFactorTask(HierarchicalTask):
                     daily_ic, nan=0.0, posinf=0.0, neginf=0.0
                 ).mean().item()
             )
-        except (OutOfDataRangeError, TypeError, ValueError, RuntimeError):
-            program.invalid = True
-            program.error_type = "qlib_evaluation"
-            program.error_node = None
+        except torch.cuda.OutOfMemoryError:
+            raise
+        except Exception as error:
+            _mark_invalid(
+                program,
+                f"qlib_evaluation_{type(error).__name__}",
+            )
             score = -1.0
         if not np.isfinite(score):
-            program.invalid = True
-            program.error_type = "non_finite_reward"
-            program.error_node = None
+            _mark_invalid(program, "non_finite_reward")
             score = -1.0
         self.score_cache[expression_text] = score
         return score

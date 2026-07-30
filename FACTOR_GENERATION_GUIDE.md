@@ -77,6 +77,13 @@ python -m pip install -r requirements-dso-pytorch.txt
 bash scripts/run_final_dso_generation.sh
 ```
 
+DSO 脚本会先用相同 Qlib 训练数据运行一个 32 表达式的完整 runtime
+preflight，覆盖公式生成、AlphaForge 表达式解析、Qlib 奖励、PyTorch
+策略更新和 DSO 日志收尾。只有出现 `PASS: DSO preflight` 后才会自动开始
+20,000 样本正式搜索。诊断时可单独查看
+`logs/dso_preflight_seed0.log`；正式实验不要设置
+`DSO_SKIP_PREFLIGHT=1`。
+
 默认输出：
 
 ```text

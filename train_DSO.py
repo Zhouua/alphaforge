@@ -72,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--library_size", type=int, default=100)
     parser.add_argument("--min_factors", type=int, default=50)
     parser.add_argument("--output_root", default="out_dso")
+    parser.add_argument("--preflight_only", action="store_true")
     args = parser.parse_args()
     if args.test_start is not None or args.test_end is not None:
         parser.error(
@@ -100,8 +101,12 @@ def main() -> None:
     os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
     device = choose_device(args.device)
     DeepSymbolicOptimizer, Program = load_pytorch_dso()
-    from dso_qlib_task import configure_qlib_task
+    from dso_qlib_task import (
+        configure_qlib_task,
+        validate_expression_roundtrip,
+    )
 
+    validate_expression_roundtrip()
     split_id = (
         f"{args.train_start}_{args.train_end}_"
         f"{args.valid_start}_{args.valid_end}"
@@ -120,7 +125,8 @@ def main() -> None:
             device=device,
         )
         configure_qlib_task(data, target)
-        run_name = f"dso_csi300_{split_id}_{seed}"
+        suffix = "_preflight" if args.preflight_only else ""
+        run_name = f"dso_csi300_{split_id}_{seed}{suffix}"
         run_dir = Path(args.output_root) / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
         config = {
@@ -181,6 +187,27 @@ def main() -> None:
         model.train()
         qlib_task = Program.task
         scored_expressions = list(qlib_task.score_cache.items())
+        if args.preflight_only:
+            if model.trainer.iteration < 1:
+                raise RuntimeError("DSO preflight did not complete one iteration.")
+            if not scored_expressions:
+                raise RuntimeError(
+                    "DSO preflight generated no parseable expressions."
+                )
+            positive_scores = [
+                score for _, score in scored_expressions if score > 0
+            ]
+            if not positive_scores:
+                raise RuntimeError(
+                    "DSO preflight completed, but no expression received a "
+                    "positive finite Qlib train IC."
+                )
+            print(
+                "PASS: DSO preflight completed a full sample/reward/"
+                f"policy-update cycle with {len(scored_expressions)} unique "
+                f"expressions and {len(positive_scores)} positive rewards."
+            )
+            continue
         library_path = write_factor_library(
             scored_expressions,
             run_dir,

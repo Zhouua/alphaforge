@@ -28,7 +28,7 @@ def quantile_variance(
         actions, obs, priors = policy.sample(batch_size)
         programs = [from_tokens(a) for a in actions]
         r = np.array([p.r for p in programs])
-        quantile = np.quantile(r, 1 - epsilon, interpolation="higher")
+        quantile = np.quantile(r, 1 - epsilon, method="higher")
         empirical_quantiles.append(quantile)
         unique_programs = [
             p for p in programs if p.str not in memory_queue.unique_items
@@ -61,7 +61,7 @@ def quantile_variance(
         actions, obs, priors = policy.sample(int(n_samples_bias))
         programs = [from_tokens(a) for a in actions]
         r = np.array([p.r for p in programs])
-        true_quantile = np.quantile(r, 1 - epsilon, interpolation="higher")
+        true_quantile = np.quantile(r, 1 - epsilon, method="higher")
         print("'True' empirical quantile:", true_quantile)
         print(
             "Empirical quantile bias:",

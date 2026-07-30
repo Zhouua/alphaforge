@@ -124,6 +124,24 @@ class AlignedProtocolTest(unittest.TestCase):
         self.assertNotIn(".tostring()", sources)
         self.assertIn(".tobytes()", sources)
 
+    def test_dso_reward_restores_feature_alias_and_isolates_candidates(self):
+        source = Path("dso_qlib_task.py").read_text(encoding="utf-8")
+        self.assertIn('EXPRESSION_NAMESPACE["open"] = open_', source)
+        self.assertIn("def parse_alpha_expression", source)
+        self.assertNotIn(
+            "eval(expression_text, EXPRESSION_NAMESPACE, {})",
+            source,
+        )
+        self.assertIn("except torch.cuda.OutOfMemoryError:", source)
+        self.assertIn("except Exception as error:", source)
+
+    def test_dso_runner_requires_runtime_preflight(self):
+        source = Path(
+            "scripts/run_final_dso_generation.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("--preflight_only", source)
+        self.assertIn("DSO_SKIP_PREFLIGHT", source)
+
 
 if __name__ == "__main__":
     unittest.main()
