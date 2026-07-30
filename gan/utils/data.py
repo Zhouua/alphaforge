@@ -82,12 +82,15 @@ def _search_cache_name(
     valid_start: str,
     valid_end: str,
     qlib_path: str,
+    max_backtrack_days: int,
+    max_future_days: int,
 ) -> str:
     target_name = str(target).replace("/", "_").replace(" ", "")
     provider_name = Path(qlib_path).name
     return (
         f"{instruments}_search_pkl_{target_name}_{freq}_{provider_name}_"
-        f"{train_start}_{train_end}_{valid_start}_{valid_end}"
+        f"{train_start}_{train_end}_{valid_start}_{valid_end}_"
+        f"bt{max_backtrack_days}_ft{max_future_days}"
     )
 
 
@@ -101,6 +104,8 @@ def get_search_data_by_dates(
     freq: str = "day",
     qlib_path: Optional[str] = None,
     device: str = "cuda:0",
+    max_backtrack_days: int = 100,
+    max_future_days: int = 30,
 ):
     """Load only train/validation data for factor discovery.
 
@@ -117,6 +122,10 @@ def get_search_data_by_dates(
         raise ValueError(
             "Expected train_start <= train_end < valid_start <= valid_end."
         )
+    if max_backtrack_days < 0 or max_future_days < 0:
+        raise ValueError(
+            "max_backtrack_days and max_future_days must be non-negative."
+        )
 
     resolved_qlib_path = _resolve_qlib_path(qlib_path)
     provider_uri = {freq: resolved_qlib_path}
@@ -131,6 +140,8 @@ def get_search_data_by_dates(
         valid_start,
         valid_end,
         resolved_qlib_path,
+        max_backtrack_days,
+        max_future_days,
     )
     cache_dir = Path("pkl") / name
     common = dict(
@@ -138,6 +149,8 @@ def get_search_data_by_dates(
         qlib_path=provider_uri,
         freq=freq,
         device=torch.device("cpu"),
+        max_backtrack_days=max_backtrack_days,
+        max_future_days=max_future_days,
     )
     try:
         data = load_pickle(cache_dir / "data.pkl")

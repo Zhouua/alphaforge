@@ -2,6 +2,7 @@ from collections import namedtuple
 
 import numpy as np
 from alphagen.data.expression import *
+from symbolic_search_config import ROLLING_WINDOWS
 
 # OPERATORS = [
 #     # Unary
@@ -82,8 +83,8 @@ for op in unary_ops:
 for op in binary_ops:
     funcs.append(GenericOperator(function=binary(op), name=op.__name__, arity=2))
 for op in rolling_ops:
-    for day in [10, 20, 30, 40, 50]:
+    for day in ROLLING_WINDOWS:
         funcs.append(GenericOperator(function=rolling(op, day), name=op.__name__ + str(day), arity=1))
 for op in rolling_binary_ops:
-    for day in [10, 20, 30, 40, 50]:
+    for day in ROLLING_WINDOWS:
         funcs.append(GenericOperator(function=rolling_binary(op, day), name=op.__name__ + str(day), arity=2))

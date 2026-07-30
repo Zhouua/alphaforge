@@ -5,6 +5,10 @@ import unittest
 from pathlib import Path
 
 from factor_library_io import write_factor_library
+from symbolic_search_config import (
+    FACTOR_BACKTRACK_DAYS,
+    required_backtrack_days,
+)
 from experiment_protocol import (
     BACKTEST,
     FEATURES,
@@ -141,6 +145,30 @@ class AlignedProtocolTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("--preflight_only", source)
         self.assertIn("DSO_SKIP_PREFLIGHT", source)
+
+    def test_symbolic_search_uses_expression_length_warmup(self):
+        self.assertEqual(required_backtrack_days(20), 1000)
+        self.assertEqual(FACTOR_BACKTRACK_DAYS, 1000)
+        for filename in ("train_AFF.py", "train_GP.py", "train_DSO.py"):
+            source = Path(filename).read_text(encoding="utf-8")
+            self.assertIn("max_backtrack_days=", source)
+        dso_source = Path("train_DSO.py").read_text(encoding="utf-8")
+        self.assertIn("validate_runtime_data", dso_source)
+
+    def test_frozen_model_preserves_factor_warmup(self):
+        freeze_source = Path("freeze_factor_model.py").read_text(
+            encoding="utf-8"
+        )
+        public_source = Path("public_test.py").read_text(encoding="utf-8")
+        self.assertIn('"max_backtrack_days": FACTOR_BACKTRACK_DAYS', freeze_source)
+        self.assertIn(
+            "max_backtrack_days=max_backtrack_days",
+            public_source,
+        )
+
+    def test_search_cache_keys_include_data_padding(self):
+        source = Path("gan/utils/data.py").read_text(encoding="utf-8")
+        self.assertIn("f\"bt{max_backtrack_days}_ft{max_future_days}\"", source)
 
 
 if __name__ == "__main__":

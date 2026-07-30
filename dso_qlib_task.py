@@ -13,6 +13,10 @@ from alphagen.utils.correlation import batch_pearsonr
 from alphagen.utils.pytorch_utils import normalize_by_day
 from alphagen_generic.features import close, high, low, open_, volume, vwap
 from alphagen_generic.operators import funcs as generic_funcs
+from symbolic_search_config import (
+    MAX_ROLLING_LOOKBACK,
+    required_backtrack_days,
+)
 from dso.library import HardCodedConstant, Library, Token
 from dso.task import HierarchicalTask
 
@@ -62,6 +66,33 @@ def configure_qlib_task(data, target_expression) -> None:
         data=data,
         target_factor=target_expression.evaluate(data),
     )
+
+
+def validate_runtime_data(max_expression_length: int) -> None:
+    """Exercise the worst legal rolling chain before stochastic training."""
+    if _CONTEXT is None:
+        raise RuntimeError(
+            "Call configure_qlib_task before validating runtime data."
+        )
+    required = required_backtrack_days(max_expression_length)
+    available = _CONTEXT.data.max_backtrack_days
+    if available < required:
+        raise RuntimeError(
+            f"DSO data has only {available} warm-up days; at least {required} "
+            f"are required for expression length {max_expression_length}."
+        )
+
+    expression: Expression = open_
+    # One feature token plus max_expression_length - 1 operator tokens.
+    for _ in range(max_expression_length - 1):
+        expression = Ref(expression, MAX_ROLLING_LOOKBACK)
+    factor = expression.evaluate(_CONTEXT.data)
+    if factor.shape != _CONTEXT.target_factor.shape:
+        raise RuntimeError(
+            "DSO warm-up probe shape mismatch: "
+            f"factor={tuple(factor.shape)}, "
+            f"target={tuple(_CONTEXT.target_factor.shape)}."
+        )
 
 
 def parse_alpha_expression(text: str) -> Expression:

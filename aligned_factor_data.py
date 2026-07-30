@@ -15,6 +15,7 @@ from alphagen.utils.pytorch_utils import normalize_by_day
 from alphagen_generic.features import *  # noqa: F403 - expression namespace
 from alphagen_qlib.stock_data import FeatureType, StockData
 from experiment_protocol import PROTOCOL_VERSION, TARGET_SELL_SHIFT
+from symbolic_search_config import FACTOR_BACKTRACK_DAYS
 
 
 def load_factor_library(path: str | Path) -> dict:
@@ -59,12 +60,13 @@ def load_stock_data(
     start: str,
     end: str,
     device: str,
+    max_backtrack_days: int = FACTOR_BACKTRACK_DAYS,
 ) -> StockData:
     return StockData(
         instruments,
         start,
         end,
-        max_backtrack_days=100,
+        max_backtrack_days=max_backtrack_days,
         max_future_days=TARGET_SELL_SHIFT,
         raw=False,
         qlib_path={"day": str(Path(qlib_path).expanduser().resolve())},

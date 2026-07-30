@@ -12,6 +12,10 @@ from gan.network.predictor import train_regression_model_with_weight
 from alphagen.rl.env.wrapper import SIZE_ACTION
 from gan.utils import Builders
 from alphagen_generic.features import *
+from symbolic_search_config import (
+    FACTOR_BACKTRACK_DAYS,
+    MAX_EXPRESSION_LENGTH,
+)
 from alphagen.data.expression import *
 from alphagen.utils.correlation import batch_ret,batch_pearsonr
 import numpy as np
@@ -209,6 +213,7 @@ def main(
         freq=freq,
         qlib_path=qlib_path,
         device=resolved_device,
+        max_backtrack_days=FACTOR_BACKTRACK_DAYS,
     )
     split_id = (
         f"{train_start}_{train_end}_{valid_start}_{valid_end}"
@@ -219,7 +224,7 @@ def main(
         class cfg:
             name = f'{save_name}_{instruments}_{split_id}_{seed}'
             # 
-            max_len = 20
+            max_len = MAX_EXPRESSION_LENGTH
 
             batch_size = 256
             potential_size = 100

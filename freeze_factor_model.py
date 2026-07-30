@@ -23,6 +23,7 @@ from experiment_protocol import (
     SPLITS,
     protocol_dict,
 )
+from symbolic_search_config import FACTOR_BACKTRACK_DAYS
 
 
 def _device(name: str) -> str:
@@ -119,6 +120,7 @@ def main(
             "instruments": instruments,
             "train": [train_start, train_end],
             "valid": [valid_start, valid_end],
+            "max_backtrack_days": FACTOR_BACKTRACK_DAYS,
         },
         "validation_metrics": metrics,
         "protocol": protocol_dict(include_test=False),

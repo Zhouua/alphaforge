@@ -97,6 +97,9 @@ def main(
             )
 
     instruments = frozen["data"]["instruments"]
+    max_backtrack_days = int(
+        frozen["data"].get("max_backtrack_days", 100)
+    )
     resolved_device = _device(device)
     test_data = load_stock_data(
         qlib_path=qlib_path,
@@ -104,6 +107,7 @@ def main(
         start=test_start,
         end=test_end,
         device=resolved_device,
+        max_backtrack_days=max_backtrack_days,
     )
     features = evaluate_factor_frame(test_data, frozen["expressions"])
     if features.columns.tolist() != frozen["feature_names"]:

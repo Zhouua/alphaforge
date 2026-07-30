@@ -32,6 +32,10 @@ from gan.utils.data import get_search_data_by_dates
 from gplearn.fitness import make_fitness
 from gplearn.functions import make_function
 from gplearn.genetic import SymbolicRegressor
+from symbolic_search_config import (
+    MAX_EXPRESSION_LENGTH,
+    required_backtrack_days,
+)
 
 
 EXPRESSION_NAMESPACE = {
@@ -93,7 +97,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qlib_path", default=None)
     parser.add_argument("--population_size", type=int, default=1000)
     parser.add_argument("--generations", type=int, default=40)
-    parser.add_argument("--max_expression_length", type=int, default=20)
+    parser.add_argument(
+        "--max_expression_length",
+        type=int,
+        default=MAX_EXPRESSION_LENGTH,
+    )
     parser.add_argument("--library_size", type=int, default=100)
     parser.add_argument("--min_factors", type=int, default=50)
     parser.add_argument("--output_root", default="out_gp")
@@ -122,6 +130,9 @@ def main() -> None:
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
     device = choose_device(args.device)
+    max_backtrack_days = required_backtrack_days(
+        args.max_expression_length
+    )
     split_id = (
         f"{args.train_start}_{args.train_end}_"
         f"{args.valid_start}_{args.valid_end}"
@@ -170,6 +181,7 @@ def main() -> None:
             freq=args.freq,
             qlib_path=args.qlib_path,
             device=device,
+            max_backtrack_days=max_backtrack_days,
         )
         target_factor = target.evaluate(data)
         score_cache: dict[str, float] = {}
@@ -274,6 +286,7 @@ def main() -> None:
                 "device": device,
                 "split_id": split_id,
                 "search_cache": cache_name,
+                "max_backtrack_days": max_backtrack_days,
             },
         )
         print(f"PASS: GP exported {args.library_size} train-selected factors")

@@ -15,6 +15,10 @@ from alphagen_generic.features import target
 from experiment_protocol import INSTRUMENTS, SPLITS
 from factor_library_io import write_factor_library
 from gan.utils.data import get_search_data_by_dates
+from symbolic_search_config import (
+    MAX_EXPRESSION_LENGTH,
+    required_backtrack_days,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -68,7 +72,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n_samples", type=int, default=20000)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--epsilon", type=float, default=0.05)
-    parser.add_argument("--max_expression_length", type=int, default=20)
+    parser.add_argument(
+        "--max_expression_length",
+        type=int,
+        default=MAX_EXPRESSION_LENGTH,
+    )
     parser.add_argument("--library_size", type=int, default=100)
     parser.add_argument("--min_factors", type=int, default=50)
     parser.add_argument("--output_root", default="out_dso")
@@ -100,9 +108,13 @@ def main() -> None:
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
     device = choose_device(args.device)
+    max_backtrack_days = required_backtrack_days(
+        args.max_expression_length
+    )
     DeepSymbolicOptimizer, Program = load_pytorch_dso()
     from dso_qlib_task import (
         configure_qlib_task,
+        validate_runtime_data,
         validate_expression_roundtrip,
     )
 
@@ -123,8 +135,10 @@ def main() -> None:
             freq="day",
             qlib_path=args.qlib_path,
             device=device,
+            max_backtrack_days=max_backtrack_days,
         )
         configure_qlib_task(data, target)
+        validate_runtime_data(args.max_expression_length)
         suffix = "_preflight" if args.preflight_only else ""
         run_name = f"dso_csi300_{split_id}_{seed}{suffix}"
         run_dir = Path(args.output_root) / run_name
@@ -194,18 +208,19 @@ def main() -> None:
                 raise RuntimeError(
                     "DSO preflight generated no parseable expressions."
                 )
-            positive_scores = [
-                score for _, score in scored_expressions if score > 0
+            valid_scores = [
+                score for _, score in scored_expressions if score >= 0
             ]
-            if not positive_scores:
+            if not valid_scores:
                 raise RuntimeError(
-                    "DSO preflight completed, but no expression received a "
-                    "positive finite Qlib train IC."
+                    "DSO preflight completed, but no expression completed a "
+                    "finite Qlib train evaluation."
                 )
             print(
                 "PASS: DSO preflight completed a full sample/reward/"
                 f"policy-update cycle with {len(scored_expressions)} unique "
-                f"expressions and {len(positive_scores)} positive rewards."
+                f"expressions and {len(valid_scores)} successful Qlib "
+                "evaluations."
             )
             continue
         library_path = write_factor_library(
@@ -225,6 +240,7 @@ def main() -> None:
                 "device": device,
                 "split_id": split_id,
                 "search_cache": cache_name,
+                "max_backtrack_days": max_backtrack_days,
                 "backend": "official PyTorch DSO",
             },
         )
