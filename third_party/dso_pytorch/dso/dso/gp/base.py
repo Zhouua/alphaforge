@@ -59,7 +59,7 @@ class RunOneStepAlgorithm:
             try:
                 # we've seen this one before, copy back the reward.
                 # We use a try loop to avoid double look-ups in the dict
-                p = Program.cache[tokens.tostring()]
+                p = Program.cache[tokens.tobytes()]
                 ind.fitness.values = (-p.r,)
             except (KeyError, TypeError):
                 # We have not seen this one, we need to compute reward

@@ -286,7 +286,7 @@ class RNNPolicy(Policy):
             old_indices = []
             for idx, a in enumerate(actions):
                 tokens = _finish_tokens(a)
-                key = tokens.tostring()
+                key = tokens.tobytes()
                 if key not in Program.cache.keys() and n_novel < n:
                     new_indices.append(idx)
                     n_novel += 1

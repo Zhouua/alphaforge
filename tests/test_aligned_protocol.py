@@ -115,6 +115,15 @@ class AlignedProtocolTest(unittest.TestCase):
         self.assertNotIn("collections.Mapping", source)
         self.assertIn("from collections.abc import Mapping", source)
 
+    def test_vendored_dso_uses_numpy2_byte_api(self):
+        root = Path("third_party/dso_pytorch/dso/dso")
+        sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in root.rglob("*.py")
+        )
+        self.assertNotIn(".tostring()", sources)
+        self.assertIn(".tobytes()", sources)
+
 
 if __name__ == "__main__":
     unittest.main()

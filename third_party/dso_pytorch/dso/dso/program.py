@@ -151,7 +151,7 @@ def from_tokens(tokens, skip_cache=False, on_policy=True, finish_tokens=True):
     if skip_cache or Program.task.stochastic:
         p = Program(tokens, on_policy=on_policy)
     else:
-        key = tokens.tostring()
+        key = tokens.tobytes()
         try:
             p = Program.cache[key]
             if on_policy:
@@ -255,7 +255,7 @@ class Program(object):
             )
 
         self.invalid = False
-        self.str = tokens.tostring()
+        self.str = tokens.tobytes()
         self.tokens = tokens
 
         self.on_policy_count = 1 if on_policy else 0
