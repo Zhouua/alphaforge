@@ -1,6 +1,6 @@
 """Utility functions used in deep symbolic optimization."""
 
-import collections
+from collections.abc import Mapping
 import copy
 import functools
 import numpy as np
@@ -189,7 +189,7 @@ def safe_merge_dicts(base_dict, update_dict):
         return update_dict
     base_dict = copy.deepcopy(base_dict)
     for key, value in update_dict.items():
-        if isinstance(value, collections.Mapping):
+        if isinstance(value, Mapping):
             base_dict[key] = safe_merge_dicts(base_dict.get(key, {}), value)
         else:
             base_dict[key] = value

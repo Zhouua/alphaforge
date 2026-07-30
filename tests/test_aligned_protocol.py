@@ -108,6 +108,13 @@ class AlignedProtocolTest(unittest.TestCase):
             self.assertEqual(library["selection_data"], "train")
             self.assertFalse(metadata["test_data_loaded"])
 
+    def test_vendored_dso_uses_python311_collection_apis(self):
+        source = Path(
+            "third_party/dso_pytorch/dso/dso/utils.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("collections.Mapping", source)
+        self.assertIn("from collections.abc import Mapping", source)
+
 
 if __name__ == "__main__":
     unittest.main()
